@@ -1,45 +1,25 @@
 "use client";
 
-import { useState } from "react";
 import { Check, AlertTriangle } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { ConflictResult } from "@/lib/settlement/detectConflicts";
 
+// Controlled component — the parent (SettlementEngine) owns resolution state.
+// ConflictWarning renders resolved/unresolved rows based on the resolutions map
+// it receives. Clicking a button calls onResolve(conflictId, source) so the
+// parent can update its state and switch the active waterfall result.
+
 interface Props {
   conflicts: ConflictResult[];
-  onResolve: (
-    conflictId: string,
-    chosenValue: string,
-    source: "structured" | "notes",
-  ) => void;
+  resolutions: Record<string, "structured" | "notes">;
+  onResolve: (conflictId: string, source: "structured" | "notes") => void;
 }
 
-type Resolution = {
-  label: string;
-  source: "structured" | "notes";
-};
-
-export function ConflictWarning({ conflicts, onResolve }: Props) {
-  const [resolved, setResolved] = useState<Record<string, Resolution>>({});
-
+export function ConflictWarning({ conflicts, resolutions, onResolve }: Props) {
   if (conflicts.length === 0) return null;
 
-  const allResolved = conflicts.every((c) => resolved[c.id] !== undefined);
-  if (allResolved) return null;
-
-  const resolvedCount = Object.keys(resolved).length;
-
-  function handleResolve(
-    conflictId: string,
-    value: string,
-    source: "structured" | "notes",
-    label: string,
-  ) {
-    setResolved((prev) => ({ ...prev, [conflictId]: { label, source } }));
-    onResolve(conflictId, value, source);
-  }
+  const resolvedCount = Object.keys(resolutions).length;
 
   return (
     <Card accent="amber" className="bg-amber-50/20">
@@ -68,11 +48,15 @@ export function ConflictWarning({ conflicts, onResolve }: Props) {
 
       <CardContent className="px-5 py-0 divide-y divide-amber-100/80">
         {conflicts.map((conflict) => {
-          const res = resolved[conflict.id];
+          const source = resolutions[conflict.id];
 
-          if (res) {
+          if (source !== undefined) {
             return (
-              <ResolvedRow key={conflict.id} conflict={conflict} resolution={res} />
+              <ResolvedRow
+                key={conflict.id}
+                conflict={conflict}
+                source={source}
+              />
             );
           }
 
@@ -80,7 +64,7 @@ export function ConflictWarning({ conflicts, onResolve }: Props) {
             <ConflictRow
               key={conflict.id}
               conflict={conflict}
-              onResolve={handleResolve}
+              onResolve={onResolve}
             />
           );
         })}
@@ -95,11 +79,16 @@ export function ConflictWarning({ conflicts, onResolve }: Props) {
 
 function ResolvedRow({
   conflict,
-  resolution,
+  source,
 }: {
   conflict: ConflictResult;
-  resolution: Resolution;
+  source: "structured" | "notes";
 }) {
+  // Derive the display label from the matching resolution option
+  const label =
+    conflict.resolutionOptions.find((o) => o.source === source)?.label ??
+    source;
+
   return (
     <div className="py-3 flex items-center gap-2">
       <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-50 ring-1 ring-brand-200/60">
@@ -109,11 +98,9 @@ function ResolvedRow({
         {conflict.field}
       </span>
       <span className="text-[12px] text-ink-400">→ using</span>
-      <span className="text-[12.5px] font-mono text-ink-800">
-        {resolution.label}
-      </span>
+      <span className="text-[12.5px] font-mono text-ink-800">{label}</span>
       <span className="inline-flex items-center px-1.5 py-px rounded text-[9.5px] font-medium bg-ink-100 text-ink-500 ring-1 ring-inset ring-ink-200/60">
-        {resolution.source === "structured" ? "structured" : "notes"}
+        {source === "structured" ? "structured" : "notes"}
       </span>
     </div>
   );
@@ -128,12 +115,7 @@ function ConflictRow({
   onResolve,
 }: {
   conflict: ConflictResult;
-  onResolve: (
-    id: string,
-    value: string,
-    source: "structured" | "notes",
-    label: string,
-  ) => void;
+  onResolve: (conflictId: string, source: "structured" | "notes") => void;
 }) {
   return (
     <div
@@ -202,15 +184,13 @@ function ConflictRow({
         {conflict.resolutionOptions.map((opt) => (
           <button
             key={opt.value}
-            onClick={() => onResolve(conflict.id, opt.value, opt.source, opt.label)}
+            onClick={() => onResolve(conflict.id, opt.source)}
             className={cn(
               "inline-flex items-start gap-1.5 rounded-lg px-3 py-2",
               "text-[12px] text-left leading-snug font-medium",
               "ring-1 ring-inset transition-all duration-150 active:translate-y-px",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2",
-              opt.source === "notes"
-                ? "bg-white text-ink-900 ring-ink-200/80 hover:bg-ink-50 shadow-sm"
-                : "bg-white text-ink-900 ring-ink-200/80 hover:bg-ink-50 shadow-sm",
+              "bg-white text-ink-900 ring-ink-200/80 hover:bg-ink-50 shadow-sm",
             )}
           >
             <span

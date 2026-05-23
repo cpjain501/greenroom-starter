@@ -194,6 +194,20 @@ export async function loadShowData(showId: string): Promise<SettlementInput> {
     }
   }
 
+  // Detect "after breakeven, all incremental goes to artist" semantics in the
+  // deal notes. When present, walkout_pot bonuses use replacement mode:
+  // above the breakeven threshold the artist receives pct% of incremental
+  // gross INSTEAD of the base % calculation.
+  const rawNotes = deal?.deal_notes_freetext ? String(deal.deal_notes_freetext) : "";
+  const isReplacementDeal = /after\s+breakeven|all\s+incremental/i.test(rawNotes);
+  if (isReplacementDeal) {
+    bonusesJson = bonusesJson.map((b) =>
+      b.type === "walkout_pot"
+        ? { ...b, stackingMode: "replacement" as const, thresholdType: "breakeven" as const }
+        : b,
+    );
+  }
+
   return {
     dealType,
     guarantee: deal?.guarantee_amount != null ? Number(deal.guarantee_amount) : 0,

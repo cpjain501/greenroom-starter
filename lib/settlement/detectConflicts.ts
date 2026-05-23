@@ -38,6 +38,7 @@ export function detectConflicts(
   structured: {
     guarantee: number
     percentage: number
+    percentageBase: 'net' | 'gross'
     expenseCap: number
     hospitalityCap: number
     bonuses: any[]
@@ -47,6 +48,8 @@ export function detectConflicts(
     grossRevenue: number
     platformFees: number
     totalExpenses: number
+    calculatedTotal?: number    // result from the current engine run
+    offPlatformTotal?: number   // total_to_artist from the settlements table (may be null)
   },
 ): ConflictResult[] {
   const conflicts: ConflictResult[] = []
@@ -189,6 +192,103 @@ export function detectConflicts(
           label: `Use ${formatMoney(structured.hospitalityCap)} (from structured)`,
           value: String(structured.hospitalityCap),
           source: 'structured',
+        },
+      ],
+    })
+  }
+
+  // ── RULE 5: Percentage base stored as gross but historical result matches net ──
+  //
+  // Catches shows (e.g. Pale Lake) where deal_type or percentage_basis is stored
+  // as 'gross' in the DB but the spreadsheet result matches a % of net calculation.
+  // Compares |calculatedGross - offPlatform| vs |calculatedNet - offPlatform| and
+  // fires when net is strictly closer AND the gross divergence exceeds $200.
+
+  const isGrossBased =
+    structured.dealType === 'percent_gross' ||
+    (structured.dealType === 'vs' && structured.percentageBase === 'gross')
+
+  if (
+    isGrossBased &&
+    actuals.calculatedTotal != null &&
+    actuals.offPlatformTotal != null
+  ) {
+    const netAmount = actuals.grossRevenue - actuals.platformFees - actuals.totalExpenses
+    const grossBase = actuals.grossRevenue * (structured.percentage / 100)
+    const netBase = netAmount * (structured.percentage / 100)
+    // Swap the percentage base, keep all bonuses/caps the same
+    const resultNet = actuals.calculatedTotal - grossBase + netBase
+    const resultGross = actuals.calculatedTotal
+
+    const diffGross = Math.abs(resultGross - actuals.offPlatformTotal)
+    const diffNet = Math.abs(resultNet - actuals.offPlatformTotal)
+
+    if (diffNet < diffGross && diffGross > 200) {
+      const improvement = diffGross - diffNet
+      conflicts.push({
+        id: 'percentage_base_mismatch',
+        severity: 'medium',
+        field: 'Percentage base (gross vs net)',
+        structuredValue: `${structured.percentage}% of gross = ${formatMoney(resultGross)}`,
+        notesValue: `${structured.percentage}% of net = ${formatMoney(resultNet)}`,
+        description:
+          `Deal appears to use % of net, not % of gross, based on the settled amount. ` +
+          `Calculated as gross: ${formatMoney(resultGross)}. ` +
+          `Calculated as net: ${formatMoney(resultNet)}. ` +
+          `Previously settled: ${formatMoney(actuals.offPlatformTotal)}. ` +
+          `Net calculation is ${formatMoney(improvement)} closer to the settled amount.`,
+        estimatedDollarImpact: Math.abs(resultGross - resultNet),
+        resolutionOptions: [
+          {
+            label: `Use % of gross (structured) — ${formatMoney(resultGross)}`,
+            value: 'gross',
+            source: 'structured',
+          },
+          {
+            label: `Use % of net (matches settled amount) — ${formatMoney(resultNet)}`,
+            value: 'net',
+            source: 'notes',
+          },
+        ],
+      })
+    }
+  }
+
+  // ── RULE 7: Calculated total diverges from stored off-platform result ─────────
+  //
+  // Catches cases where the engine's output doesn't match what was actually
+  // settled (e.g. Pale Lake, where no "breakeven" keyword triggers rule 1 but
+  // the numbers still diverge). Fires only when a prior settlement was recorded.
+
+  const { calculatedTotal, offPlatformTotal } = actuals
+
+  if (
+    calculatedTotal != null &&
+    offPlatformTotal != null &&
+    Math.abs(calculatedTotal - offPlatformTotal) > 200
+  ) {
+    const absDiff = Math.abs(calculatedTotal - offPlatformTotal)
+    conflicts.push({
+      id: 'total_divergence',
+      severity: 'medium',
+      field: 'Calculated vs previously settled amount',
+      structuredValue: formatMoney(calculatedTotal),
+      notesValue: formatMoney(offPlatformTotal),
+      description:
+        `The new calculation produces ${formatMoney(calculatedTotal)} but this show was previously ` +
+        `settled off-platform at ${formatMoney(offPlatformTotal)} — a ${formatMoney(absDiff)} difference. ` +
+        `Review the deal notes to understand why.`,
+      estimatedDollarImpact: absDiff,
+      resolutionOptions: [
+        {
+          label: `Use calculated result (${formatMoney(calculatedTotal)})`,
+          value: String(calculatedTotal),
+          source: 'structured',
+        },
+        {
+          label: `Acknowledge — previously settled at ${formatMoney(offPlatformTotal)}`,
+          value: String(offPlatformTotal),
+          source: 'notes',
         },
       ],
     })

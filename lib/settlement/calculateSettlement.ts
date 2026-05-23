@@ -37,6 +37,12 @@ export interface BonusEntry {
   bonusAmount?: number        // for flat_threshold: fixed dollar bonus
   bonusPercentage?: number    // for walkout_pot: e.g. 100 means 100%
   thresholdType?: 'gross' | 'breakeven'  // walkout_pot: threshold is a fixed $ or the calculated breakeven
+  stackingMode?: 'additive' | 'replacement'
+  // 'additive'     — pot adds on top of the base % result (default)
+  // 'replacement'  — above threshold, artist gets pct% of incremental gross
+  //                  INSTEAD of the base % calculation. Total =
+  //                  base_at_threshold + pct% × (gross − threshold).
+  //                  Used when notes say "after breakeven, all incremental goes to artist."
 }
 
 export interface ExpenseLine {
@@ -71,7 +77,7 @@ export interface SettlementResult {
   netAfterExpenses: number
   breakeven: number           // guarantee + totalExpensesApplied + platformFees
   totalExpensesApplied: number
-  winningBranch: 'guarantee' | 'percentage' | 'walkout' | 'flat' | 'door'
+  winningBranch: 'guarantee' | 'percentage' | 'flat' | 'door'
   baseAmount: number          // result before bonuses
   bonusTotal: number
   isSupported: boolean        // always true — this engine handles all deal types
@@ -292,30 +298,16 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
     }
 
     case 'vs': {
+      // STEP 1: Compare Branch A (percentage) vs Branch B (guarantee); take the higher.
+      // STEP 2: walkout_pot bonuses are added on top of the winner in Step 6 — they
+      //         are NOT a separate competing branch.
       const basisAmount =
         input.percentageBase === 'gross' ? effectiveGross : netAfterExpenses
       const percentageResult = basisAmount * (input.percentage / 100)
 
-      // Walkout pot bonuses are a third comparison branch: guarantee + pot amount.
-      // They are NOT additive on top of the vs result (step 6 skips them for vs).
-      const walkoutBonus = input.bonusesJson.find(
-        (b) => b.type === 'walkout_pot',
-      )
-      let walkoutBranchAmount = -Infinity
-      let walkoutPotAmount = 0
-      if (walkoutBonus) {
-        const threshold =
-          walkoutBonus.thresholdType === 'breakeven'
-            ? breakeven
-            : walkoutBonus.threshold
-        const pct = walkoutBonus.bonusPercentage ?? 100
-        walkoutPotAmount = Math.max(0, (effectiveGross - threshold) * (pct / 100))
-        walkoutBranchAmount = input.guarantee + walkoutPotAmount
-      }
-
       waterfall.push({
         id: id('vs_branch_a'),
-        label: `Branch A: ${input.percentage}% of ${input.percentageBase} — ${formatMoney(percentageResult)}`,
+        label: `Branch A: ${input.percentage}% of ${input.percentageBase}`,
         amount: percentageResult,
         displayAmount: formatMoney(percentageResult),
         type: 'branch',
@@ -324,45 +316,13 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
 
       waterfall.push({
         id: id('vs_branch_b'),
-        label: `Branch B: Guarantee — ${formatMoney(input.guarantee)}`,
+        label: 'Branch B: Guarantee',
         amount: input.guarantee,
         displayAmount: formatMoney(input.guarantee),
         type: 'branch',
       })
 
-      if (walkoutBonus) {
-        const thresholdLabel =
-          walkoutBonus.thresholdType === 'breakeven'
-            ? `above breakeven (${formatMoney(breakeven)})`
-            : `above ${formatMoney(walkoutBonus.threshold)}`
-        waterfall.push({
-          id: id('vs_branch_c'),
-          label: `Branch C: Guarantee + walkout pot ${thresholdLabel} — ${formatMoney(walkoutBranchAmount)}`,
-          amount: walkoutBranchAmount,
-          displayAmount: formatMoney(walkoutBranchAmount),
-          type: 'branch',
-          note: `${formatMoney(input.guarantee)} + ${formatMoney(walkoutPotAmount)} pot`,
-        })
-      }
-
-      const bestAmount = Math.max(
-        percentageResult,
-        input.guarantee,
-        walkoutBranchAmount,
-      )
-
-      if (walkoutBonus && walkoutBranchAmount >= percentageResult && walkoutBranchAmount >= input.guarantee) {
-        baseAmount = walkoutBranchAmount
-        winningBranch = 'walkout'
-        waterfall.push({
-          id: id('vs_winner'),
-          label: '→ Branch C wins (walkout)',
-          amount: walkoutBranchAmount,
-          displayAmount: formatMoney(walkoutBranchAmount),
-          type: 'branch_winner',
-          note: `${formatMoney(walkoutPotAmount)} pot above ${walkoutBonus.thresholdType === 'breakeven' ? 'breakeven' : formatMoney(walkoutBonus.threshold)}`,
-        })
-      } else if (percentageResult >= input.guarantee) {
+      if (percentageResult >= input.guarantee) {
         baseAmount = percentageResult
         winningBranch = 'percentage'
         const margin = percentageResult - input.guarantee
@@ -422,26 +382,54 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
         })
       }
     } else if (bonus.type === 'walkout_pot') {
-      // For vs deals: walkout_pot was already factored into Branch C in step 5.
-      // For all other deal types: treat as additive bonus.
-      if (input.dealType !== 'vs') {
-        const threshold =
-          bonus.thresholdType === 'breakeven' ? breakeven : bonus.threshold
-        if (effectiveGross > threshold) {
-          const pct = bonus.bonusPercentage ?? 0
-          const pot = (effectiveGross - threshold) * (pct / 100)
+      const threshold =
+        bonus.thresholdType === 'breakeven' ? breakeven : bonus.threshold
+      if (effectiveGross > threshold) {
+        const pct = bonus.bonusPercentage ?? 0
+        const excess = effectiveGross - threshold
+        const threshLabel =
+          bonus.thresholdType === 'breakeven'
+            ? `breakeven (${formatMoney(breakeven)})`
+            : formatMoney(threshold)
+
+        if (bonus.stackingMode === 'replacement') {
+          // Replacement: above threshold, artist gets pct% of incremental gross
+          // INSTEAD of the base percentage. Compute what the deal pays if
+          // gross exactly equalled the threshold, then add the replacement pot.
+          const netAtThreshold = threshold - input.platformFees - totalExpensesApplied
+          const basisAtThreshold =
+            input.percentageBase === 'gross' ? threshold : netAtThreshold
+          const percentageAtThreshold = basisAtThreshold * (input.percentage / 100)
+          const baseAtThreshold =
+            input.dealType === 'vs'
+              ? Math.max(percentageAtThreshold, input.guarantee)
+              : percentageAtThreshold
+          const replacementPot = excess * (pct / 100)
+          const replacementTotal = baseAtThreshold + replacementPot
+          const adjustment = replacementTotal - baseAmount // net delta from base
+
+          if (adjustment > 0) {
+            bonusTotal += adjustment
+            waterfall.push({
+              id: id('bonus_walkout_replacement'),
+              label: `Walkout replaces above ${threshLabel}`,
+              amount: adjustment,
+              displayAmount: formatMoney(adjustment),
+              type: 'bonus',
+              note: `${formatMoney(baseAtThreshold)} at threshold + ${pct}% of ${formatMoney(excess)} → ${formatMoney(replacementTotal)} total`,
+            })
+          }
+        } else {
+          // Additive: pot stacks on top of winning branch
+          const pot = excess * (pct / 100)
           bonusTotal += pot
-          const threshLabel =
-            bonus.thresholdType === 'breakeven'
-              ? `breakeven (${formatMoney(breakeven)})`
-              : formatMoney(threshold)
           waterfall.push({
             id: id('bonus_walkout'),
-            label: `Walkout pot: ${pct}% above ${threshLabel}`,
+            label: `Walkout pot (gross > ${threshLabel})`,
             amount: pot,
             displayAmount: formatMoney(pot),
             type: 'bonus',
-            note: `(${formatMoney(effectiveGross)} − ${formatMoney(threshold)}) × ${pct}%`,
+            note: `${pct}% of ${formatMoney(excess)} above ${threshLabel}`,
           })
         }
       }

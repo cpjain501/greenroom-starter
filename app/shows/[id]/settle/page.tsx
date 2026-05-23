@@ -23,7 +23,7 @@ import { StatusBadge, DealTypeBadge, PlainBadge } from "@/components/ui/badge";
 import { loadShowData } from "@/lib/settlement/loadShowData";
 import { calculateSettlement } from "@/lib/settlement/calculateSettlement";
 import { detectConflicts } from "@/lib/settlement/detectConflicts";
-import { SettlementConflictResolver } from "@/components/settlement/SettlementConflictResolver";
+import { SettlementEngine } from "@/components/settlement/SettlementEngine";
 import { formatMoney, formatShowDateFull } from "@/lib/format";
 import type { Settlement, Recoup } from "@/db/schema";
 import { Logomark } from "@/components/brand/logo";
@@ -59,18 +59,42 @@ export default async function SettlePage({
     );
   }
 
-  // ── New calculation engine ─────────────────────────────────────────────────
-  // loadShowData reads from the DB via @libsql/client (async). calculateSettlement
-  // is a pure function; we call it here only to get totalExpensesApplied for the
-  // conflict-detection actuals. SettlementConflictResolver re-runs it client-side.
+  // ── Settlement engine — two results pre-computed on the server ────────────
+  // loadShowData reads from the DB via @libsql/client (async). We compute two
+  // results here so the client component (SettlementEngine) can switch between
+  // them without any client-side recalculation:
+  //   resultWithStructured — exactly as stored in the DB
+  //   resultWithNotes      — all notes-side conflict resolutions applied at once:
+  //                          • walkout_pot: thresholdType → 'breakeven'
+  //                          • percent_gross deal: dealType → 'percent_net'
+  //                          • vs with gross basis: percentageBase → 'net'
 
   const settlementInput = await loadShowData(id);
-  const initialResult = calculateSettlement(settlementInput);
+  const resultWithStructured = calculateSettlement(settlementInput);
+
+  const inputWithNotes = {
+    ...settlementInput,
+    // Fix walkout threshold type
+    bonusesJson: settlementInput.bonusesJson.map((b) =>
+      b.type === "walkout_pot"
+        ? { ...b, thresholdType: "breakeven" as const }
+        : b,
+    ),
+    // Fix percentage base: gross → net when that conflict is detected
+    ...(settlementInput.dealType === "percent_gross"
+      ? { dealType: "percent_net" as const }
+      : settlementInput.dealType === "vs" && settlementInput.percentageBase === "gross"
+        ? { percentageBase: "net" as const }
+        : {}),
+  };
+  const resultWithNotes = calculateSettlement(inputWithNotes);
+
   const conflicts = detectConflicts(
     settlementInput.notesFreetext,
     {
       guarantee: settlementInput.guarantee,
       percentage: settlementInput.percentage,
+      percentageBase: settlementInput.percentageBase,
       expenseCap: settlementInput.expenseCap,
       hospitalityCap: settlementInput.hospitalityCap,
       bonuses: settlementInput.bonusesJson,
@@ -79,7 +103,9 @@ export default async function SettlePage({
     {
       grossRevenue: settlementInput.grossRevenue,
       platformFees: settlementInput.platformFees,
-      totalExpenses: initialResult.totalExpensesApplied,
+      totalExpenses: resultWithStructured.totalExpensesApplied,
+      calculatedTotal: resultWithStructured.totalToArtist,
+      offPlatformTotal: settlement?.totalToArtist ?? undefined,
     },
   );
 
@@ -156,9 +182,10 @@ export default async function SettlePage({
       )}
 
       <div className="space-y-6 mt-6">
-        {/* ── New waterfall (replaces UnsupportedDeal + SupportedSettlement) ── */}
-        <SettlementConflictResolver
-          input={settlementInput}
+        {/* ── Settlement engine: waterfall + conflict resolution ─────────── */}
+        <SettlementEngine
+          resultWithStructured={resultWithStructured}
+          resultWithNotes={resultWithNotes}
           conflicts={conflicts}
           artistName={artist?.name ?? ""}
           showDate={formatShowDateFull(show.date)}

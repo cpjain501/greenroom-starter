@@ -84,24 +84,35 @@ function ResolvedRow({
   conflict: ConflictResult;
   source: "structured" | "notes";
 }) {
-  // Derive the display label from the matching resolution option
   const label =
     conflict.resolutionOptions.find((o) => o.source === source)?.label ??
     source;
+  const isDismiss = conflict.dismissOnly;
 
   return (
-    <div className="py-3 flex items-center gap-2">
+    <div className="py-3 flex items-center gap-2 min-w-0 overflow-hidden">
       <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-50 ring-1 ring-brand-200/60">
         <Check className="h-3 w-3 text-brand-700" />
       </div>
-      <span className="text-[12.5px] font-medium text-ink-700">
+      <span className="text-[12.5px] font-medium text-ink-700 shrink-0">
         {conflict.field}
       </span>
-      <span className="text-[12px] text-ink-400">→ using</span>
-      <span className="text-[12.5px] font-mono text-ink-800">{label}</span>
-      <span className="inline-flex items-center px-1.5 py-px rounded text-[9.5px] font-medium bg-ink-100 text-ink-500 ring-1 ring-inset ring-ink-200/60">
-        {source === "structured" ? "structured" : "notes"}
-      </span>
+      {isDismiss ? (
+        <span className="text-[12px] text-ink-400 shrink-0">— noted</span>
+      ) : (
+        <>
+          <span className="text-[12px] text-ink-400 shrink-0">→ using</span>
+          <span
+            className="text-[12.5px] font-mono text-ink-800 truncate min-w-0"
+            title={label}
+          >
+            {label}
+          </span>
+          <span className="inline-flex items-center px-1.5 py-px rounded text-[9.5px] font-medium bg-ink-100 text-ink-500 ring-1 ring-inset ring-ink-200/60 shrink-0">
+            {source === "structured" ? "structured" : "notes"}
+          </span>
+        </>
+      )}
     </div>
   );
 }
@@ -180,33 +191,51 @@ function ConflictRow({
         )}
 
       {/* Resolution buttons */}
-      <div className="flex gap-2 flex-wrap">
-        {conflict.resolutionOptions.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onResolve(conflict.id, opt.source)}
-            className={cn(
-              "inline-flex items-start gap-1.5 rounded-lg px-3 py-2",
-              "text-[12px] text-left leading-snug font-medium",
-              "ring-1 ring-inset transition-all duration-150 active:translate-y-px",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2",
-              "bg-white text-ink-900 ring-ink-200/80 hover:bg-ink-50 shadow-sm",
-            )}
-          >
-            <span
+      {conflict.dismissOnly ? (
+        // Dismiss-only conflicts (e.g. total_divergence) show a single
+        // acknowledgement button — they don't change the waterfall calculation.
+        <button
+          onClick={() => onResolve(conflict.id, "structured")}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-lg px-3 py-2",
+            "text-[12px] font-medium leading-snug",
+            "ring-1 ring-inset transition-all duration-150 active:translate-y-px",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2",
+            "bg-white text-ink-900 ring-ink-200/80 hover:bg-ink-50 shadow-sm",
+          )}
+        >
+          <Check className="h-3 w-3 text-ink-500 shrink-0" />
+          Understood — I've reviewed this difference
+        </button>
+      ) : (
+        <div className="flex gap-2 flex-wrap">
+          {conflict.resolutionOptions.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => onResolve(conflict.id, opt.source)}
               className={cn(
-                "inline-flex shrink-0 items-center mt-px px-1 py-px rounded text-[8.5px] font-mono uppercase tracking-wider ring-1 ring-inset",
-                opt.source === "notes"
-                  ? "bg-amber-50 text-amber-700 ring-amber-200/60"
-                  : "bg-ink-100 text-ink-600 ring-ink-200/60",
+                "inline-flex items-start gap-1.5 rounded-lg px-3 py-2",
+                "text-[12px] text-left leading-snug font-medium",
+                "ring-1 ring-inset transition-all duration-150 active:translate-y-px",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2",
+                "bg-white text-ink-900 ring-ink-200/80 hover:bg-ink-50 shadow-sm",
               )}
             >
-              {opt.source === "notes" ? "notes" : "fields"}
-            </span>
-            {opt.label}
-          </button>
-        ))}
-      </div>
+              <span
+                className={cn(
+                  "inline-flex shrink-0 items-center mt-px px-1 py-px rounded text-[8.5px] font-mono uppercase tracking-wider ring-1 ring-inset",
+                  opt.source === "notes"
+                    ? "bg-amber-50 text-amber-700 ring-amber-200/60"
+                    : "bg-ink-100 text-ink-600 ring-ink-200/60",
+                )}
+              >
+                {opt.source === "notes" ? "notes" : "fields"}
+              </span>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

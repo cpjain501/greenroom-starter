@@ -22,6 +22,7 @@ export interface ConflictResult {
   notesValue: string
   description: string
   estimatedDollarImpact?: number
+  dismissOnly?: boolean   // true = render a single "Understood" button, not two choices
   resolutionOptions: Array<{
     label: string
     value: string
@@ -279,16 +280,13 @@ export function detectConflicts(
         `settled off-platform at ${formatMoney(offPlatformTotal)} — a ${formatMoney(absDiff)} difference. ` +
         `Review the deal notes to understand why.`,
       estimatedDollarImpact: absDiff,
+      dismissOnly: true,
       resolutionOptions: [
+        // Single acknowledgement — does not change the waterfall calculation.
         {
-          label: `Use calculated result (${formatMoney(calculatedTotal)})`,
-          value: String(calculatedTotal),
+          label: `Understood — I've reviewed this difference`,
+          value: 'acknowledged',
           source: 'structured',
-        },
-        {
-          label: `Acknowledge — previously settled at ${formatMoney(offPlatformTotal)}`,
-          value: String(offPlatformTotal),
-          source: 'notes',
         },
       ],
     })
